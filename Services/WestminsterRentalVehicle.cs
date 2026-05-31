@@ -1,207 +1,209 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using WestminsterVehicleRentalSystem.Interfaces;
 using WestminsterVehicleRentalSystem.Models;
-
 
 namespace WestminsterVehicleRentalSystem.Services
 {
     public class WestminsterRentalVehicle : IRentalManager, IRentalCustomer
     {
-        private readonly List<Vehicle> vehicles;
-        private readonly string vehiclesFilePath;
+        private readonly List<Vehicle> _vehicles;
+        private readonly string _filePath;
         private const int MaxParkingSlots = 50;
 
-        public WestminsterRentalVehicle(string vehiclesFilePath)
+        private static readonly JsonSerializerOptions _jsonOptions = new()
         {
-            this.vehiclesFilePath = vehiclesFilePath;
-            vehicles = LoadVehiclesFromFile(vehiclesFilePath) ?? new List<Vehicle>();
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        };
+
+        public WestminsterRentalVehicle(string filePath)
+        {
+            _filePath = filePath;
+            _vehicles = LoadVehiclesFromFile(filePath);
         }
+
+        // ── Read ─────────────────────────────────────────────────────────
+
+        public IReadOnlyList<Vehicle> GetVehicles() => _vehicles.AsReadOnly();
+
+        public IReadOnlyList<Vehicle> GetAvailableVehicles(Schedule schedule, string? vehicleType)
+        {
+            return _vehicles
+                .Where(v =>
+                    (vehicleType == null || GetVehicleTypeName(v) == vehicleType) &&
+                    v.Reservations.All(r => !r.Schedule.Overlaps(schedule)))
+                .ToList()
+                .AsReadOnly();
+        }
+
+        public bool VehicleExists(string reg) =>
+            _vehicles.Any(v => string.Equals(v.RegistrationNumber, reg, StringComparison.OrdinalIgnoreCase));
+
+        // ── Vehicle CRUD ─────────────────────────────────────────────────
 
         public bool AddVehicle(Vehicle v)
         {
-            if (vehicles.Count >= MaxParkingSlots || vehicles.Any(veh => veh.RegistrationNumber == v.RegistrationNumber))
-            {
-                return false; // Parking lot is full or vehicle already exists
-            }
-
-            vehicles.Add(v);
-            Console.WriteLine($"Vehicle added successfully. Available parking lots: {MaxParkingSlots - vehicles.Count}");
+            if (_vehicles.Count >= MaxParkingSlots) return false;
+            if (_vehicles.Any(x => x.RegistrationNumber == v.RegistrationNumber)) return false;
+            _vehicles.Add(v);
+            Save();
             return true;
         }
 
-        public bool DeleteVehicle(string number)
+        public bool DeleteVehicle(string reg)
         {
-            var vehicle = vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
-            if (vehicle == null)
-            {
-                return false; // Vehicle not found
-            }
-
-            vehicles.Remove(vehicle);
-            Console.WriteLine($"Vehicle {number} deleted. Available parking lots: {MaxParkingSlots - vehicles.Count}");
+            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
+            if (vehicle == null) return false;
+            _vehicles.Remove(vehicle);
+            Save();
             return true;
         }
 
-        public void ListVehicles()
+        // ── Reservation CRUD ─────────────────────────────────────────────
+
+        public Reservation? AddReservation(string reg, Schedule schedule, Driver driver)
         {
-            foreach (var vehicle in vehicles)
-            {
-                vehicle.DisplayInfo();
-            }
-        }
+            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
+            if (vehicle == null) return null;
 
-        public void ListOrderedVehicles()
-        {
-            var orderedVehicles = vehicles.OrderBy(v => v.Make).ToList();
-            foreach (var vehicle in orderedVehicles)
-            {
-                vehicle.DisplayInfo();
-            }
-        }
-
-        public void GenerateReport(string fileName)
-        {
-            string projectDirectory = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"..\..\.."));
-            string fullPath = Path.Combine(projectDirectory, fileName);
-
-            StringBuilder reportContent = new StringBuilder();
-
-            foreach (var vehicle in vehicles)
-            {
-                reportContent.AppendLine($"Vehicle: {vehicle.RegistrationNumber}, {vehicle.Make}, {vehicle.Model}, Daily Rental Price: {vehicle.DailyRentalPrice}");
-                foreach (var reservation in vehicle.Reservations.OrderBy(r => r.Schedule.PickupDate))
-                {
-                    reportContent.AppendLine($"\tReservation - Pickup: {reservation.Schedule.PickupDate.ToShortDateString()}, Drop-off: {reservation.Schedule.DropoffDate.ToShortDateString()}, Driver: {reservation.Driver.Name} {reservation.Driver.Surname}");
-                }
-            }
-
-            File.WriteAllText(fileName, reportContent.ToString());
-            Console.WriteLine($"Report generated and saved to {fileName}");
-
-            // Now use fullPath to write your report
-            // Example: File.WriteAllText(fullPath, "Report content...");
-        }
-
-
-        public void ListAvailableVehicles(Schedule wantedSchedule, Type vehicleType)
-        {
-            // Filter the vehicles list to find those that match the given type
-            // and have no reservations overlapping with the wanted schedule.
-            var availableVehicles = vehicles
-                .Where(v => v.GetType() == vehicleType &&
-                            v.Reservations.All(r => !r.Schedule.Overlaps(wantedSchedule)))
-                .ToList();
-
-            // Check if any vehicles meet the criteria
-            if (availableVehicles.Any())
-            {
-                // If so, iterate over the filtered list and call DisplayInfo() on each vehicle
-                foreach (var vehicle in availableVehicles)
-                {
-                    vehicle.DisplayInfo(); // Assumes DisplayInfo is implemented to print relevant vehicle details
-                }
-            }
-            else
-            {
-                // If no vehicles meet the criteria, inform the user
-                Console.WriteLine("No available vehicles found for the specified schedule.");
-            }
-        }
-
-        public bool AddReservation(string number, Schedule wantedSchedule)
-        {
-            var vehicle = vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
-            if (vehicle == null)
-            {
-                Console.WriteLine($"Vehicle with registration number {number} does not exist.");
-                return false;
-            }
-
-            // Check for overlap with existing reservations
-            bool overlaps = vehicle.Reservations.Any(reservation => reservation.Schedule.Overlaps(wantedSchedule));
-            if (overlaps)
-            {
-                Console.WriteLine("Failed to add reservation due to schedule overlap.");
-                return false;
-            }
+            if (vehicle.Reservations.Any(r => r.Schedule.Overlaps(schedule)))
+                return null;
 
             var reservation = new Reservation
             {
-                Vehicle = vehicle,
-                Schedule = wantedSchedule,
-                Driver = new Driver("Malinda", "Gamage", new DateTime(1997, 05, 11), "971321300V") 
+                Driver = driver,
+                Schedule = schedule,
             };
             vehicle.Reservations.Add(reservation);
-            Console.WriteLine($"Reservation added for vehicle {number}.");
+            Save();
+            return reservation;
+        }
+
+        public bool ChangeReservationById(string reg, string reservationId, Schedule newSchedule)
+        {
+            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
+            if (vehicle == null) return false;
+
+            var reservation = vehicle.Reservations.FirstOrDefault(r => r.Id == reservationId);
+            if (reservation == null) return false;
+
+            bool otherOverlaps = vehicle.Reservations
+                .Where(r => r.Id != reservationId)
+                .Any(r => r.Schedule.Overlaps(newSchedule));
+            if (otherOverlaps) return false;
+
+            reservation.Schedule = newSchedule;
+            Save();
             return true;
+        }
+
+        public bool DeleteReservationById(string reg, string reservationId)
+        {
+            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
+            if (vehicle == null) return false;
+
+            var reservation = vehicle.Reservations.FirstOrDefault(r => r.Id == reservationId);
+            if (reservation == null) return false;
+
+            vehicle.Reservations.Remove(reservation);
+            Save();
+            return true;
+        }
+
+        // ── Report ───────────────────────────────────────────────────────
+
+        public string GenerateReportText()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("Westminster Vehicle Rental — Fleet Report");
+            sb.AppendLine(new string('─', 50));
+            foreach (var v in _vehicles.OrderBy(v => v.Make))
+            {
+                sb.AppendLine($"{v.Make} {v.Model} [{v.RegistrationNumber}] — £{v.DailyRentalPrice}/day");
+                foreach (var r in v.Reservations.OrderBy(r => r.Schedule.PickupDate))
+                    sb.AppendLine($"  • {r.Schedule.PickupDate:yyyy-MM-dd} → {r.Schedule.DropoffDate:yyyy-MM-dd}  {r.Driver.Name} {r.Driver.Surname}");
+            }
+            return sb.ToString();
+        }
+
+        // ── IRentalManager (console compat) ─────────────────────────────
+
+        public void ListVehicles() => _vehicles.ForEach(v => v.DisplayInfo());
+        public void ListOrderedVehicles() => _vehicles.OrderBy(v => v.Make).ToList().ForEach(v => v.DisplayInfo());
+        public void GenerateReport(string fileName) => File.WriteAllText(fileName, GenerateReportText());
+
+        // ── IRentalCustomer (console compat, kept for interface) ─────────
+
+        public void ListAvailableVehicles(Schedule schedule, Type type)
+        {
+            _vehicles
+                .Where(v => v.GetType() == type && v.Reservations.All(r => !r.Schedule.Overlaps(schedule)))
+                .ToList()
+                .ForEach(v => v.DisplayInfo());
+        }
+
+        public bool AddReservation(string number, Schedule schedule)
+        {
+            var driver = new Driver("Guest", "User", DateTime.UtcNow.AddYears(-25), "GUEST0000");
+            return AddReservation(number, schedule, driver) != null;
         }
 
         public bool ChangeReservation(string number, Schedule oldSchedule, Schedule newSchedule)
         {
-            var vehicle = vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
-            if (vehicle == null) return false;
-
-            var reservation = vehicle.Reservations.FirstOrDefault(r => r.Schedule.Equals(oldSchedule));
-            if (reservation == null) return false;
-
-            if (vehicle.Reservations.Any(r => r.Schedule.Overlaps(newSchedule))) return false;
-
-            reservation.Schedule = newSchedule;
-            Console.WriteLine("Reservation schedule updated successfully.");
-            return true;
+            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
+            var res = vehicle?.Reservations.FirstOrDefault(r =>
+                r.Schedule.PickupDate == oldSchedule.PickupDate &&
+                r.Schedule.DropoffDate == oldSchedule.DropoffDate);
+            return res != null && ChangeReservationById(number, res.Id, newSchedule);
         }
 
         public bool DeleteReservation(string number, Schedule schedule)
         {
-            var vehicle = vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
-            if (vehicle == null) return false;
-
-            var reservation = vehicle.Reservations.FirstOrDefault(r => r.Schedule.Equals(schedule));
-            if (reservation == null) return false;
-
-            vehicle.Reservations.Remove(reservation);
-            Console.WriteLine("Reservation deleted successfully.");
-            return true;
+            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
+            var res = vehicle?.Reservations.FirstOrDefault(r =>
+                r.Schedule.PickupDate == schedule.PickupDate &&
+                r.Schedule.DropoffDate == schedule.DropoffDate);
+            return res != null && DeleteReservationById(number, res.Id);
         }
 
-        public bool VehicleExists(string registrationNumber)
-        {
-            return vehicles.Any(v => string.Equals(v.RegistrationNumber, registrationNumber, StringComparison.OrdinalIgnoreCase));
-        }
+        // ── Persistence ──────────────────────────────────────────────────
 
-        public void SaveVehiclesToFile()
+        private void Save()
         {
             try
             {
-                string json = JsonSerializer.Serialize(vehicles, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(vehiclesFilePath, json);
+                File.WriteAllText(_filePath, JsonSerializer.Serialize(_vehicles, _jsonOptions));
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Log or handle the exception as needed
-                Console.WriteLine("Failed to save vehicles to file.");
+                Console.Error.WriteLine($"Failed to save: {ex.Message}");
             }
         }
 
-        public List<Vehicle> LoadVehiclesFromFile(string filePath)
+        private List<Vehicle> LoadVehiclesFromFile(string path)
         {
-            if (!File.Exists(filePath))
-            {
-                return new List<Vehicle>();
-            }
-
+            if (!File.Exists(path)) return new List<Vehicle>();
             try
             {
-                string json = File.ReadAllText(filePath);
-                return JsonSerializer.Deserialize<List<Vehicle>>(json) ?? new List<Vehicle>();
+                var json = File.ReadAllText(path);
+                return JsonSerializer.Deserialize<List<Vehicle>>(json, _jsonOptions) ?? new List<Vehicle>();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Log or handle the exception as needed
-                Console.WriteLine("Failed to load vehicles from file.");
+                Console.Error.WriteLine($"Failed to load: {ex.Message}");
                 return new List<Vehicle>();
             }
         }
+
+        private static string GetVehicleTypeName(Vehicle v) => v switch
+        {
+            Car => "Car",
+            ElectricCar => "ElectricCar",
+            Van => "Van",
+            Motorbike => "Motorbike",
+            _ => "Unknown"
+        };
     }
 }

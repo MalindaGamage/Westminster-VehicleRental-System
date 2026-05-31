@@ -1,0 +1,105 @@
+[
+  {
+    "vehicleType": "Car",
+    "bodyStyle": "Saloon",
+    "numberOfSeats": 5,
+    "registrationNumber": "WP-CAA-1001",
+    "make": "Toyota",
+    "model": "Axio",
+    "dailyRentalPrice": 8500.0,
+    "imageUrl": "https://images.unsplash.com/photo-1626072557464-90403d788e8d?w=800&q=80",
+    "reservations": []
+  },
+  {
+    "vehicleType": "Car",
+    "bodyStyle": "Saloon",
+    "numberOfSeats": 5,
+    "registrationNumber": "WP-CAB-2002",
+    "make": "Toyota",
+    "model": "Allion",
+    "dailyRentalPrice": 10500.0,
+    "imageUrl": "https://images.unsplash.com/photo-1619682817481-e994891cd1f5?w=800&q=80",
+    "reservations": [
+      {
+        "id": "res00001",
+        "createdAt": "2026-05-28",
+        "driver": {
+          "name": "Malinda",
+          "surname": "Gamage",
+          "dateOfBirth": "1997-05-11T00:00:00",
+          "licenseNumber": "971321300V"
+        },
+        "schedule": {
+          "pickupDate": "2026-06-05T00:00:00",
+          "dropoffDate": "2026-06-10T00:00:00"
+        }
+      }
+    ]
+  },
+  {
+    "vehicleType": "ElectricCar",
+    "batteryCapacity": 40.0,
+    "rangePerCharge": 240.0,
+    "registrationNumber": "CP-EV-3001",
+    "make": "Nissan",
+    "model": "Leaf",
+    "dailyRentalPrice": 15000.0,
+    "imageUrl": "https://images.unsplash.com/photo-1611580568467-a8e2bb344bbf?w=800&q=80",
+    "reservations": []
+  },
+  {
+    "vehicleType": "ElectricCar",
+    "batteryCapacity": 8.8,
+    "rangePerCharge": 68.0,
+    "registrationNumber": "SP-EV-4002",
+    "make": "Toyota",
+    "model": "Prius PHV",
+    "dailyRentalPrice": 13500.0,
+    "imageUrl": "https://images.unsplash.com/photo-1638618164682-12b986ec2a75?w=800&q=80",
+    "reservations": []
+  },
+  {
+    "vehicleType": "Van",
+    "cargoSpace": 6.5,
+    "isPassengerVan": true,
+    "registrationNumber": "WP-KDH-5001",
+    "make": "Toyota",
+    "model": "KDH Van",
+    "dailyRentalPrice": 11000.0,
+    "imageUrl": "https://images.unsplash.com/photo-1658489199682-b3bccbd21885?w=800&q=80",
+    "reservations": []
+  },
+  {
+    "vehicleType": "Van",
+    "cargoSpace": 5.5,
+    "isPassengerVan": false,
+    "registrationNumber": "NC-L300-6001",
+    "make": "Mitsubishi",
+    "model": "L300",
+    "dailyRentalPrice": 8000.0,
+    "imageUrl": "https://images.unsplash.com/photo-1733965961857-99e62b0fc869?w=800&q=80",
+    "reservations": []
+  },
+  {
+    "vehicleType": "Motorbike",
+    "engineSize": 220,
+    "hasSideCar": false,
+    "registrationNumber": "WP-PLS-7001",
+    "make": "Bajaj",
+    "model": "Pulsar 220F",
+    "dailyRentalPrice": 3500.0,
+    "imageUrl": "https://images.unsplash.com/photo-1697683051660-01921a39bb62?w=800&q=80",
+    "reservations": []
+  },
+  {
+    "vehicleType": "Motorbike",
+    "engineSize": 150,
+    "hasSideCar": false,
+    "registrationNumber": "WP-CB1-8001",
+    "make": "Honda",
+    "model": "CB150R",
+    "dailyRentalPrice": 4500.0,
+    "imageUrl": "https://images.unsplash.com/photo-1615572766543-06c21416eb05?w=800&q=80",
+    "reservations": []
+  }
+]
