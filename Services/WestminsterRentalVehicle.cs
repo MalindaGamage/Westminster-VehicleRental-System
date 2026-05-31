@@ -1,6 +1,6 @@
 using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using Microsoft.EntityFrameworkCore;
+using WestminsterVehicleRentalSystem.Data;
 using WestminsterVehicleRentalSystem.Interfaces;
 using WestminsterVehicleRentalSystem.Models;
 
@@ -8,141 +8,144 @@ namespace WestminsterVehicleRentalSystem.Services
 {
     public class WestminsterRentalVehicle : IRentalManager, IRentalCustomer
     {
-        private readonly List<Vehicle> _vehicles;
-        private readonly string _filePath;
+        private readonly IDbContextFactory<AppDbContext> _dbFactory;
         private const int MaxParkingSlots = 50;
 
-        private static readonly JsonSerializerOptions _jsonOptions = new()
+        public WestminsterRentalVehicle(IDbContextFactory<AppDbContext> dbFactory)
         {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        };
-
-        public WestminsterRentalVehicle(string filePath)
-        {
-            _filePath = filePath;
-            _vehicles = LoadVehiclesFromFile(filePath);
+            _dbFactory = dbFactory;
         }
 
-        // ── Read ─────────────────────────────────────────────────────────
+        // ── Read ─────────────────────────────────────────────────────────────
 
-        public IReadOnlyList<Vehicle> GetVehicles() => _vehicles.AsReadOnly();
+        public IReadOnlyList<Vehicle> GetVehicles()
+        {
+            using var db = _dbFactory.CreateDbContext();
+            return db.Vehicles
+                     .Include(v => v.Reservations)
+                     .AsNoTracking()
+                     .ToList()
+                     .Select(MapToVehicle)
+                     .ToList();
+        }
 
         public IReadOnlyList<Vehicle> GetAvailableVehicles(Schedule schedule, string? vehicleType)
         {
-            return _vehicles
+            return GetVehicles()
                 .Where(v =>
-                    (vehicleType == null || GetVehicleTypeName(v) == vehicleType) &&
+                    (vehicleType == null || GetTypeName(v) == vehicleType) &&
                     v.Reservations.All(r => !r.Schedule.Overlaps(schedule)))
-                .ToList()
-                .AsReadOnly();
+                .ToList();
         }
 
-        public bool VehicleExists(string reg) =>
-            _vehicles.Any(v => string.Equals(v.RegistrationNumber, reg, StringComparison.OrdinalIgnoreCase));
+        public bool VehicleExists(string reg)
+        {
+            using var db = _dbFactory.CreateDbContext();
+            return db.Vehicles.Any(v => v.RegistrationNumber == reg);
+        }
 
-        // ── Vehicle CRUD ─────────────────────────────────────────────────
+        // ── Vehicle CRUD ──────────────────────────────────────────────────────
 
         public bool AddVehicle(Vehicle v)
         {
-            if (_vehicles.Count >= MaxParkingSlots) return false;
-            if (_vehicles.Any(x => x.RegistrationNumber == v.RegistrationNumber)) return false;
-            _vehicles.Add(v);
-            Save();
+            using var db = _dbFactory.CreateDbContext();
+            if (db.Vehicles.Count() >= MaxParkingSlots) return false;
+            if (db.Vehicles.Any(x => x.RegistrationNumber == v.RegistrationNumber)) return false;
+            db.Vehicles.Add(MapToEntity(v));
+            db.SaveChanges();
             return true;
         }
 
         public bool DeleteVehicle(string reg)
         {
-            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
-            if (vehicle == null) return false;
-            _vehicles.Remove(vehicle);
-            Save();
+            using var db = _dbFactory.CreateDbContext();
+            var entity = db.Vehicles.Find(reg);
+            if (entity == null) return false;
+            db.Vehicles.Remove(entity);
+            db.SaveChanges();
             return true;
         }
 
-        // ── Reservation CRUD ─────────────────────────────────────────────
+        // ── Reservation CRUD ──────────────────────────────────────────────────
 
         public Reservation? AddReservation(string reg, Schedule schedule, Driver driver)
         {
-            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
+            using var db = _dbFactory.CreateDbContext();
+            var vehicle = db.Vehicles.Include(v => v.Reservations).FirstOrDefault(v => v.RegistrationNumber == reg);
             if (vehicle == null) return null;
 
-            if (vehicle.Reservations.Any(r => r.Schedule.Overlaps(schedule)))
-                return null;
+            bool overlaps = vehicle.Reservations.Any(r =>
+                r.PickupDate < schedule.DropoffDate && r.DropoffDate > schedule.PickupDate);
+            if (overlaps) return null;
 
-            var reservation = new Reservation
+            var entity = new ReservationEntity
             {
-                Driver = driver,
-                Schedule = schedule,
+                Id = Guid.NewGuid().ToString()[..8],
+                VehicleRegistration = reg,
+                DriverName = driver.Name,
+                DriverSurname = driver.Surname,
+                DriverDateOfBirth = driver.DateOfBirth,
+                DriverLicenseNumber = driver.LicenseNumber,
+                PickupDate = schedule.PickupDate,
+                DropoffDate = schedule.DropoffDate,
             };
-            vehicle.Reservations.Add(reservation);
-            Save();
-            return reservation;
+            db.Reservations.Add(entity);
+            db.SaveChanges();
+            return MapToReservation(entity);
         }
 
         public bool ChangeReservationById(string reg, string reservationId, Schedule newSchedule)
         {
-            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
-            if (vehicle == null) return false;
+            using var db = _dbFactory.CreateDbContext();
+            var res = db.Reservations.FirstOrDefault(r => r.Id == reservationId && r.VehicleRegistration == reg);
+            if (res == null) return false;
 
-            var reservation = vehicle.Reservations.FirstOrDefault(r => r.Id == reservationId);
-            if (reservation == null) return false;
-
-            bool otherOverlaps = vehicle.Reservations
-                .Where(r => r.Id != reservationId)
-                .Any(r => r.Schedule.Overlaps(newSchedule));
+            bool otherOverlaps = db.Reservations
+                .Where(r => r.VehicleRegistration == reg && r.Id != reservationId)
+                .Any(r => r.PickupDate < newSchedule.DropoffDate && r.DropoffDate > newSchedule.PickupDate);
             if (otherOverlaps) return false;
 
-            reservation.Schedule = newSchedule;
-            Save();
+            res.PickupDate = newSchedule.PickupDate;
+            res.DropoffDate = newSchedule.DropoffDate;
+            db.SaveChanges();
             return true;
         }
 
         public bool DeleteReservationById(string reg, string reservationId)
         {
-            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == reg);
-            if (vehicle == null) return false;
-
-            var reservation = vehicle.Reservations.FirstOrDefault(r => r.Id == reservationId);
-            if (reservation == null) return false;
-
-            vehicle.Reservations.Remove(reservation);
-            Save();
+            using var db = _dbFactory.CreateDbContext();
+            var res = db.Reservations.FirstOrDefault(r => r.Id == reservationId && r.VehicleRegistration == reg);
+            if (res == null) return false;
+            db.Reservations.Remove(res);
+            db.SaveChanges();
             return true;
         }
 
-        // ── Report ───────────────────────────────────────────────────────
+        // ── Report ────────────────────────────────────────────────────────────
 
         public string GenerateReportText()
         {
             var sb = new StringBuilder();
-            sb.AppendLine("Westminster Vehicle Rental — Fleet Report");
+            sb.AppendLine("Gamage Vehicle Rental — Fleet Report");
             sb.AppendLine(new string('─', 50));
-            foreach (var v in _vehicles.OrderBy(v => v.Make))
+            foreach (var v in GetVehicles().OrderBy(v => v.Make))
             {
-                sb.AppendLine($"{v.Make} {v.Model} [{v.RegistrationNumber}] — £{v.DailyRentalPrice}/day");
+                sb.AppendLine($"{v.Make} {v.Model} [{v.RegistrationNumber}] — LKR {v.DailyRentalPrice:N0}/day");
                 foreach (var r in v.Reservations.OrderBy(r => r.Schedule.PickupDate))
                     sb.AppendLine($"  • {r.Schedule.PickupDate:yyyy-MM-dd} → {r.Schedule.DropoffDate:yyyy-MM-dd}  {r.Driver.Name} {r.Driver.Surname}");
             }
             return sb.ToString();
         }
 
-        // ── IRentalManager (console compat) ─────────────────────────────
+        // ── IRentalManager / IRentalCustomer (console compat) ────────────────
 
-        public void ListVehicles() => _vehicles.ForEach(v => v.DisplayInfo());
-        public void ListOrderedVehicles() => _vehicles.OrderBy(v => v.Make).ToList().ForEach(v => v.DisplayInfo());
+        public void ListVehicles() => GetVehicles().ToList().ForEach(v => v.DisplayInfo());
+        public void ListOrderedVehicles() => GetVehicles().OrderBy(v => v.Make).ToList().ForEach(v => v.DisplayInfo());
         public void GenerateReport(string fileName) => File.WriteAllText(fileName, GenerateReportText());
 
-        // ── IRentalCustomer (console compat, kept for interface) ─────────
-
-        public void ListAvailableVehicles(Schedule schedule, Type type)
-        {
-            _vehicles
-                .Where(v => v.GetType() == type && v.Reservations.All(r => !r.Schedule.Overlaps(schedule)))
-                .ToList()
-                .ForEach(v => v.DisplayInfo());
-        }
+        public void ListAvailableVehicles(Schedule schedule, Type type) =>
+            GetAvailableVehicles(schedule, type.Name)
+                .ToList().ForEach(v => v.DisplayInfo());
 
         public bool AddReservation(string number, Schedule schedule)
         {
@@ -152,57 +155,71 @@ namespace WestminsterVehicleRentalSystem.Services
 
         public bool ChangeReservation(string number, Schedule oldSchedule, Schedule newSchedule)
         {
-            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
-            var res = vehicle?.Reservations.FirstOrDefault(r =>
-                r.Schedule.PickupDate == oldSchedule.PickupDate &&
-                r.Schedule.DropoffDate == oldSchedule.DropoffDate);
+            using var db = _dbFactory.CreateDbContext();
+            var res = db.Reservations.FirstOrDefault(r =>
+                r.VehicleRegistration == number &&
+                r.PickupDate == oldSchedule.PickupDate &&
+                r.DropoffDate == oldSchedule.DropoffDate);
             return res != null && ChangeReservationById(number, res.Id, newSchedule);
         }
 
         public bool DeleteReservation(string number, Schedule schedule)
         {
-            var vehicle = _vehicles.FirstOrDefault(v => v.RegistrationNumber == number);
-            var res = vehicle?.Reservations.FirstOrDefault(r =>
-                r.Schedule.PickupDate == schedule.PickupDate &&
-                r.Schedule.DropoffDate == schedule.DropoffDate);
+            using var db = _dbFactory.CreateDbContext();
+            var res = db.Reservations.FirstOrDefault(r =>
+                r.VehicleRegistration == number &&
+                r.PickupDate == schedule.PickupDate &&
+                r.DropoffDate == schedule.DropoffDate);
             return res != null && DeleteReservationById(number, res.Id);
         }
 
-        // ── Persistence ──────────────────────────────────────────────────
+        // ── Mapping ───────────────────────────────────────────────────────────
 
-        private void Save()
+        private static Vehicle MapToVehicle(VehicleEntity e)
         {
-            try
+            Vehicle v = e.VehicleType switch
             {
-                File.WriteAllText(_filePath, JsonSerializer.Serialize(_vehicles, _jsonOptions));
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Failed to save: {ex.Message}");
-            }
+                "Car"         => new Car(e.RegistrationNumber, e.Make, e.Model, e.DailyRentalPrice, e.BodyStyle ?? "Saloon", e.NumberOfSeats ?? 5),
+                "ElectricCar" => new ElectricCar(e.RegistrationNumber, e.Make, e.Model, e.DailyRentalPrice, e.BatteryCapacity ?? 0, e.RangePerCharge ?? 0),
+                "Van"         => new Van(e.RegistrationNumber, e.Make, e.Model, e.DailyRentalPrice, e.CargoSpace ?? 0, e.IsPassengerVan ?? false),
+                "Motorbike"   => new Motorbike(e.RegistrationNumber, e.Make, e.Model, e.DailyRentalPrice, e.EngineSize ?? 0, e.HasSideCar ?? false),
+                _             => throw new InvalidOperationException($"Unknown vehicle type: {e.VehicleType}")
+            };
+            v.ImageUrl = e.ImageUrl;
+            v.Reservations = e.Reservations.Select(MapToReservation).ToList();
+            return v;
         }
 
-        private List<Vehicle> LoadVehiclesFromFile(string path)
+        private static Reservation MapToReservation(ReservationEntity r) => new()
         {
-            if (!File.Exists(path)) return new List<Vehicle>();
-            try
-            {
-                var json = File.ReadAllText(path);
-                return JsonSerializer.Deserialize<List<Vehicle>>(json, _jsonOptions) ?? new List<Vehicle>();
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"Failed to load: {ex.Message}");
-                return new List<Vehicle>();
-            }
-        }
+            Id = r.Id,
+            CreatedAt = r.CreatedAt,
+            Driver = new Driver(r.DriverName, r.DriverSurname, r.DriverDateOfBirth, r.DriverLicenseNumber),
+            Schedule = new Schedule { PickupDate = r.PickupDate, DropoffDate = r.DropoffDate },
+        };
 
-        private static string GetVehicleTypeName(Vehicle v) => v switch
+        private static VehicleEntity MapToEntity(Vehicle v) => new()
         {
-            Car => "Car",
-            ElectricCar => "ElectricCar",
-            Van => "Van",
-            Motorbike => "Motorbike",
+            RegistrationNumber = v.RegistrationNumber,
+            VehicleType = GetTypeName(v),
+            Make = v.Make,
+            Model = v.Model,
+            DailyRentalPrice = v.DailyRentalPrice,
+            ImageUrl = v.ImageUrl,
+            BodyStyle      = v is Car c ? c.BodyStyle : null,
+            NumberOfSeats  = v is Car cc ? cc.NumberOfSeats : null,
+            BatteryCapacity = v is ElectricCar ev ? ev.BatteryCapacity : null,
+            RangePerCharge  = v is ElectricCar evv ? evv.RangePerCharge : null,
+            CargoSpace     = v is Van van ? van.CargoSpace : null,
+            IsPassengerVan = v is Van vanv ? vanv.IsPassengerVan : null,
+            EngineSize     = v is Motorbike mb ? mb.EngineSize : null,
+            HasSideCar     = v is Motorbike mbv ? mbv.HasSideCar : null,
+        };
+
+        private static string GetTypeName(Vehicle v) => v switch
+        {
+            Car => "Car", ElectricCar => "ElectricCar",
+            Van => "Van", Motorbike => "Motorbike",
             _ => "Unknown"
         };
     }
